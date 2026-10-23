@@ -1,6 +1,6 @@
 ---
 name: models-tokens
-description: Consulta dinámicamente mediante la API local de OpenCode los modelos activos (todos o filtrados por copilot, google, opencode u ollama) y cruza sus datos con BenchLM.ai, mostrando su ventana de contexto, proveedor, costes de tokens, nivel de coste (FREE, LOW, MEDIUM, HIGH) y Score junto con recomendaciones por tipo de tarea. Usa esta skill siempre que el usuario solicite la lista de modelos, sus tokens, contexto, límites o rendimiento/clasificación, o ejecute /tokens.
+description: Consulta dinámicamente mediante la API local de OpenCode los modelos activos (todos o filtrados por copilot, google, opencode, ollama, etc...) y cruza sus datos con BenchLM.ai, mostrando su ventana de contexto, proveedor, costes de tokens, nivel de coste (FREE, LOW, MEDIUM, HIGH) y Score junto con recomendaciones por tipo de tarea. Usa esta skill siempre que el usuario solicite la lista de modelos, sus tokens, contexto, límites o rendimiento/clasificación, o ejecute /tokens.
 ---
 
 # Models Specs, Tokens & BenchLM Score Fetcher
@@ -27,10 +27,10 @@ Cuando el usuario escriba `/tokens` (con o sin filtro de proveedor, p. ej. `/tok
 
    Este script realiza automáticamente:
    - Consulta a `opencode api get /api/model`, filtrado exclusivo de modelos de código/agentes (`capabilities.tools: true`, excluyendo modelos de imagen, audio, embeddings, live, computer-use o deep-research) y filtrado opcional por proveedor (`copilot`, `google`, `opencode`, `ollama`).
-   - Redondeo de la ventana de contexto al final del nombre (`1M`, `500K`, `400K`, `256K`, `200K`).
+   - Redondeo de los tramos de ventana de contexto al final del nombre (p. ej. `200K / 1M`, `100K / 1M`, `272K / 1M`, `200K / 500K`, `400K`, `256K`, `200K`).
    - Inclusión de la columna `Provider` únicamente cuando se muestran **todos** los proveedores, agrupando en una sola fila los modelos repetidos entre proveedores (p. ej. `copilot, google`). Si se filtra por un proveedor válido específico, se omite la columna `Provider`. Si el usuario pide un proveedor que no existe, se devuelve automáticamente la lista completa de todos los proveedores.
-   - Conversión de `Input`, `Output` y `Cache Read` a créditos por 1M de tokens (`cost[0] × 100`).
-   - Cálculo de la columna `Cost` según `max(Input, Output)` (`FREE` para `opencode`/`ollama` o coste 0, `LOW` ≤ 500, `MEDIUM` < 2000, `HIGH` ≥ 2000).
+   - Obtención prioritaria de precios desde `https://openrouter.ai/api/v1/models` (con fallback a `opencode api get /api/model` si el modelo no existe en OpenRouter), mostrando `Input`, `Output`, `Cache Read` y **`Cache Write`** por cada tramo de contexto (`10 / 50`, `50 / 250`, etc.), sin duplicar valores cuando los distintos tramos tienen el mismo precio.
+   - Cálculo de la columna `Cost` según el tramo más caro de `max(Input, Output)` (`FREE` para `opencode`/`ollama` o coste 0, `LOW` ≤ 500, `MEDIUM` < 2000, `HIGH` ≥ 2000).
    - Cruce con `https://benchlm.ai/data/leaderboard.json` para obtener la columna `Score` con el valor original sin convertir y su posición (`(#rank)`).
    - Fallback a `https://benchlm.ai/data/models.json` cuando un modelo no aparece en el ranking principal, mostrando su puntuación provisional en código inline (otro color, ej. `` `65` ``) y sin número de ranking.
    - Ordenación de la tabla de mayor a menor `Score`.

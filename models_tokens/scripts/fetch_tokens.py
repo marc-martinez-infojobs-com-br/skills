@@ -11,6 +11,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 LEADERBOARD_URL = "https://benchlm.ai/data/leaderboard.json"
 MODELS_URL = "https://benchlm.ai/data/models.json"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 EXCLUDED_ID_KEYWORDS = (
     "image",
@@ -33,6 +34,14 @@ SLUG_ALIASES = {
     "gemma4": "gemma-4-e4b",
     "gemma4:e4b": "gemma-4-e4b",
     "gemma4-e4b": "gemma-4-e4b",
+}
+
+OPENROUTER_SLUG_ALIASES = {
+    "claude-opus-4.8-fast": "claude-opus-4.8",
+    "gemini-flash-latest": "gemini-3.7-flash",
+    "gemini-flash-lite-latest": "gemini-3.5-flash-lite",
+    "gemini-pro-latest": "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview",
 }
 
 
@@ -118,6 +127,11 @@ def to_benchlm_slug(model_id: str) -> str:
     return SLUG_ALIASES.get(slug, slug)
 
 
+def to_openrouter_key(model_id: str) -> str:
+    raw = model_id.strip().lower()
+    return OPENROUTER_SLUG_ALIASES.get(raw, raw)
+
+
 def format_context(tokens) -> str:
     if not tokens:
         return "N/D"
@@ -126,26 +140,177 @@ def format_context(tokens) -> str:
     return f"{round(tokens / 1000):.0f}K"
 
 
-def format_credit(val) -> str:
+def format_num(val: float) -> str:
     if val is None:
         return "0"
-    credits = val * 100
-    return f"{credits:.6f}".rstrip("0").rstrip(".")
+    return f"{val:.4f}".rstrip("0").rstrip(".")
 
 
-def cost_tier(provider_label: str, inp, out) -> str:
-    if provider_label in ("opencode", "ollama"):
+def format_tier_values(values: list) -> str:
+    formatted = [format_num(v) for v in values]
+    # Deduplicate if all context tiers have the exact same value
+    unique = []
+    for f in formatted:
+        if f not in unique:
+            unique.append(f)
+    if len(unique) == 1:
+        return unique[0]
+    return " / ".join(formatted)
+
+
+def or_price_to_credits(val) -> float:
+    if val is None or val == "":
+        return 0.0
+    return round(float(val) * 100_000_000.0, 4)
+
+
+def oc_price_to_credits(val) -> float:
+    if val is None:
+        return 0.0
+    return round(float(val) * 100.0, 4)
+
+
+def cost_tier(is_free_provider: bool, max_credit: float) -> str:
+    if is_free_provider or max_credit == 0:
         return "FREE"
-    if inp is None and out is None:
-        return "FREE"
-    m = max((inp or 0) * 100, (out or 0) * 100)
-    if m == 0:
-        return "FREE"
-    if m <= 500:
+    if max_credit <= 500:
         return "LOW"
-    if m < 2000:
+    if max_credit < 2000:
         return "MEDIUM"
     return "HIGH"
+
+
+def resolve_pricing_and_contexts(m: dict, provider_label: str, or_map: dict):
+    model_id = str(m.get("id") or m.get("modelID") or "").strip()
+    limit = m.get("limit") or {}
+    max_ctx_tokens = limit.get("context")
+    max_ctx_str = format_context(max_ctx_tokens)
+
+    is_free_provider = provider_label in ("opencode", "ollama")
+    if is_free_provider:
+        return {
+            "ctx_str": max_ctx_str,
+            "inp_str": "0",
+            "out_str": "0",
+            "cr_str": "0",
+            "cw_str": "0",
+            "max_credit": 0.0,
+            "tier": "FREE",
+        }
+
+    or_key = to_openrouter_key(model_id)
+    or_model = or_map.get(or_key)
+
+    # Check if OpenRouter has pricing for this model
+    if or_model and or_model.get("pricing"):
+        p = or_model["pricing"]
+        base_inp = or_price_to_credits(p.get("prompt"))
+        base_out = or_price_to_credits(p.get("completion"))
+        base_cr = or_price_to_credits(p.get("input_cache_read"))
+        base_cw = or_price_to_credits(p.get("input_cache_write"))
+
+        inp_vals = [base_inp]
+        out_vals = [base_out]
+        cr_vals = [base_cr]
+        cw_vals = [base_cw]
+
+        overrides = p.get("overrides") or []
+        ctx_tiers = []
+        for ov in sorted(overrides, key=lambda x: x.get("min_prompt_tokens", 0)):
+            min_tok = ov.get("min_prompt_tokens")
+            if min_tok:
+                ctx_tiers.append(format_context(min_tok))
+            inp_vals.append(
+                or_price_to_credits(ov.get("prompt"))
+                if ov.get("prompt") is not None
+                else base_inp
+            )
+            out_vals.append(
+                or_price_to_credits(ov.get("completion"))
+                if ov.get("completion") is not None
+                else base_out
+            )
+            cr_vals.append(
+                or_price_to_credits(ov.get("input_cache_read"))
+                if ov.get("input_cache_read") is not None
+                else base_cr
+            )
+            cw_vals.append(
+                or_price_to_credits(ov.get("input_cache_write"))
+                if ov.get("input_cache_write") is not None
+                else base_cw
+            )
+
+        if ctx_tiers:
+            ctx_tiers.append(max_ctx_str)
+            ctx_str = " / ".join(dict.fromkeys(ctx_tiers))
+        elif (
+            model_id.lower().startswith("claude-")
+            and max_ctx_tokens
+            and max_ctx_tokens >= 1_000_000
+        ):
+            # Copilot Claude 1M models expose 200K / 1M context options
+            ctx_str = f"200K / {max_ctx_str}"
+        else:
+            ctx_str = max_ctx_str
+
+        max_credit = max(inp_vals + out_vals)
+        tier = cost_tier(False, max_credit)
+        return {
+            "ctx_str": ctx_str,
+            "inp_str": format_tier_values(inp_vals),
+            "out_str": format_tier_values(out_vals),
+            "cr_str": format_tier_values(cr_vals),
+            "cw_str": format_tier_values(cw_vals),
+            "max_credit": max_credit,
+            "tier": tier,
+        }
+
+    # Fallback to OpenCode pricing (may include multiple cost tiers)
+    costs = m.get("cost") or []
+    if not costs:
+        return {
+            "ctx_str": max_ctx_str,
+            "inp_str": "0",
+            "out_str": "0",
+            "cr_str": "0",
+            "cw_str": "0",
+            "max_credit": 0.0,
+            "tier": "FREE",
+        }
+
+    inp_vals = []
+    out_vals = []
+    cr_vals = []
+    cw_vals = []
+    ctx_tiers = []
+    for c in costs:
+        tier_info = c.get("tier") or {}
+        if tier_info.get("type") == "context" and tier_info.get("size"):
+            ctx_tiers.append(format_context(tier_info["size"]))
+        cache = c.get("cache") or {}
+        inp_vals.append(oc_price_to_credits(c.get("input", 0)))
+        out_vals.append(oc_price_to_credits(c.get("output", 0)))
+        cr_vals.append(oc_price_to_credits(cache.get("read", 0)))
+        cw_vals.append(oc_price_to_credits(cache.get("write", 0)))
+
+    if ctx_tiers:
+        ctx_tiers.append(max_ctx_str)
+        ctx_str = " / ".join(dict.fromkeys(ctx_tiers))
+    else:
+        ctx_str = max_ctx_str
+
+    max_credit = max(inp_vals + out_vals)
+    tier = cost_tier(False, max_credit)
+    return {
+        "ctx_str": ctx_str,
+        "inp_str": format_tier_values(inp_vals),
+        "out_str": format_tier_values(out_vals),
+        "cr_str": format_tier_values(cr_vals),
+        "cw_str": format_tier_values(cw_vals),
+        "max_credit": max_credit,
+        "tier": tier,
+    }
 
 
 def main():
@@ -155,10 +320,19 @@ def main():
     opencode_models = get_opencode_models()
     lb = fetch_json(LEADERBOARD_URL)
     mods = fetch_json(MODELS_URL)
+    or_data = fetch_json(OPENROUTER_MODELS_URL)
 
     overall_map = {item["slug"]: item for item in lb.get("items", [])}
     model_list = mods.get("items") or mods.get("models") or []
     model_map = {item["slug"]: item for item in model_list}
+
+    or_map = {}
+    for om in or_data.get("data") or []:
+        oid = str(om.get("id") or "")
+        if "/" in oid:
+            short_id = oid.split("/", 1)[1].lower()
+            if ":" not in short_id and short_id not in or_map:
+                or_map[short_id] = om
 
     coding_models = [m for m in opencode_models if is_coding_agent_model(m)]
     available_providers = {
@@ -195,15 +369,7 @@ def main():
 
         model_id = m.get("id") or m.get("modelID") or m.get("name") or ""
         raw_name = (m.get("name") or model_id).replace(" (latest)", "")
-        ctx = format_context((m.get("limit") or {}).get("context"))
-        cost = (m.get("cost") or [{}])[0] if m.get("cost") else {}
-        cache = cost.get("cache") or {}
-
-        inp = cost.get("input", 0)
-        out = cost.get("output", 0)
-        c_read = cache.get("read", 0)
-        tier = cost_tier(provider_label, inp, out)
-        max_credit = 0 if tier == "FREE" else max((inp or 0) * 100, (out or 0) * 100)
+        p_info = resolve_pricing_and_contexts(m, provider_label, or_map)
 
         slug = to_benchlm_slug(model_id)
         ov = overall_map.get(slug)
@@ -227,7 +393,7 @@ def main():
                 ov_val = -1.0
                 score_str = "N/D"
 
-        label = f"{raw_name} ({ctx})"
+        label = f"{raw_name} ({p_info['ctx_str']})"
         group_key = model_id.strip().lower()
 
         if group_key not in grouped:
@@ -237,11 +403,12 @@ def main():
                 "providers": [provider_label],
                 "name": raw_name,
                 "label": label,
-                "inp": "0" if tier == "FREE" else format_credit(inp),
-                "out": "0" if tier == "FREE" else format_credit(out),
-                "c_read": "0" if tier == "FREE" else format_credit(c_read),
-                "tier": tier,
-                "max_credit": max_credit,
+                "inp": p_info["inp_str"],
+                "out": p_info["out_str"],
+                "c_read": p_info["cr_str"],
+                "c_write": p_info["cw_str"],
+                "tier": p_info["tier"],
+                "max_credit": p_info["max_credit"],
                 "ov_val": ov_val,
                 "score_str": score_str,
             }
@@ -288,11 +455,15 @@ def main():
     print("*(Datos actualizados dinámicamente)*\n")
 
     if show_provider_col:
-        print("| Modelo (contexto) | Provider | Input | Output | Cache Read | Cost | Score |")
-        print("| :--- | :--- | ---: | ---: | ---: | :--- | ---: |")
+        print(
+            "| Modelo (contexto) | Provider | Input | Output | Cache Read | Cache Write | Cost | Score |"
+        )
+        print("| :--- | :--- | ---: | ---: | ---: | ---: | :--- | ---: |")
     else:
-        print("| Modelo (contexto) | Input | Output | Cache Read | Cost | Score |")
-        print("| :--- | ---: | ---: | ---: | :--- | ---: |")
+        print(
+            "| Modelo (contexto) | Input | Output | Cache Read | Cache Write | Cost | Score |"
+        )
+        print("| :--- | ---: | ---: | ---: | ---: | :--- | ---: |")
 
     for r in rows:
         icon = winner_icons.get(r["key"])
@@ -300,28 +471,28 @@ def main():
         if show_provider_col:
             if icon:
                 print(
-                    f"| **{icon} {r['label']}** | **{r['provider_str']}** | **{r['inp']}** | **{r['out']}** | **{r['c_read']}** | **{r['tier']}** | **{clean_score}** |"
+                    f"| **{icon} {r['label']}** | **{r['provider_str']}** | **{r['inp']}** | **{r['out']}** | **{r['c_read']}** | **{r['c_write']}** | **{r['tier']}** | **{clean_score}** |"
                 )
             elif r["key"] in runner_up_keys:
                 print(
-                    f"| `{r['label']}` | `{r['provider_str']}` | `{r['inp']}` | `{r['out']}` | `{r['c_read']}` | `{r['tier']}` | `{clean_score}` |"
+                    f"| `{r['label']}` | `{r['provider_str']}` | `{r['inp']}` | `{r['out']}` | `{r['c_read']}` | `{r['c_write']}` | `{r['tier']}` | `{clean_score}` |"
                 )
             else:
                 print(
-                    f"| {r['label']} | {r['provider_str']} | {r['inp']} | {r['out']} | {r['c_read']} | {r['tier']} | {r['score_str']} |"
+                    f"| {r['label']} | {r['provider_str']} | {r['inp']} | {r['out']} | {r['c_read']} | {r['c_write']} | {r['tier']} | {r['score_str']} |"
                 )
         else:
             if icon:
                 print(
-                    f"| **{icon} {r['label']}** | **{r['inp']}** | **{r['out']}** | **{r['c_read']}** | **{r['tier']}** | **{clean_score}** |"
+                    f"| **{icon} {r['label']}** | **{r['inp']}** | **{r['out']}** | **{r['c_read']}** | **{r['c_write']}** | **{r['tier']}** | **{clean_score}** |"
                 )
             elif r["key"] in runner_up_keys:
                 print(
-                    f"| `{r['label']}` | `{r['inp']}` | `{r['out']}` | `{r['c_read']}` | `{r['tier']}` | `{clean_score}` |"
+                    f"| `{r['label']}` | `{r['inp']}` | `{r['out']}` | `{r['c_read']}` | `{r['c_write']}` | `{r['tier']}` | `{clean_score}` |"
                 )
             else:
                 print(
-                    f"| {r['label']} | {r['inp']} | {r['out']} | {r['c_read']} | {r['tier']} | {r['score_str']} |"
+                    f"| {r['label']} | {r['inp']} | {r['out']} | {r['c_read']} | {r['c_write']} | {r['tier']} | {r['score_str']} |"
                 )
 
     def fmt_picks(picks):

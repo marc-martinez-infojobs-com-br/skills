@@ -11,7 +11,7 @@ Consulta dinámicamente en tiempo real los modelos de código y agentes configur
 
 - **Comando:** `/tokens` (o `/tokens copilot`, `/tokens google`, `/tokens opencode`, `/tokens ollama`).
 - **Incluye:**
-  - Tabla ordenada de mayor a menor `Score` con costes (`Input`, `Output`, `Cache Read`) y categoría de coste (`FREE`, `LOW`, `MEDIUM`, `HIGH`).
+  - Tabla ordenada de mayor a menor `Score` con los tramos de contexto disponibles (`200K / 1M`, `100K / 1M`, `272K / 1M`, etc.), costes por tramo obtenidos prioritariamente de **OpenRouter** (`Input`, `Output`, `Cache Read`, `Cache Write`) con fallback a OpenCode, y categoría de coste (`FREE`, `LOW`, `MEDIUM`, `HIGH`).
   - Resaltado en la propia tabla del modelo ganador (`🧠`, `🛠️`, `💻`) y las alternativas (#2 y #3) para cada tipo de tarea.
   - Recomendación directa de los 3 mejores modelos por orden para:
     - 🧠 **Brainstorming, Especificación y Plan**

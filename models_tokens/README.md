@@ -156,10 +156,10 @@ python "%USERPROFILE%\.config\opencode\skills\models-tokens\scripts\fetch_tokens
 ## 5. Qué muestra el reporte `/tokens`
 
 1. **Tabla ordenada de mayor a menor `Score` (BenchLM.ai):**
-   - **Modelo (contexto):** Nombre del modelo con su ventana de contexto redondeada (`1M`, `500K`, `400K`, `256K`, `200K`).
-   - **Provider:** Proveedor del modelo (`copilot`, `google`, `opencode`, `ollama`).
-   - **Input / Output / Cache Read:** Créditos por 1M de tokens (`cost × 100`).
-   - **Cost:** Clasificación automática según `max(Input, Output)`:
+   - **Modelo (contexto):** Nombre del modelo con sus tramos de contexto disponibles (`200K / 1M`, `100K / 1M`, `272K / 1M`, `200K / 500K`, `400K`, `256K`, `200K`).
+   - **Provider:** Proveedor del modelo (`copilot`, `google`, `opencode`, `ollama`), mostrado cuando se consultan todos los proveedores.
+   - **Input / Output / Cache Read / Cache Write:** Créditos por 1M de tokens obtenidos prioritariamente de la API de **OpenRouter** (con fallback a OpenCode si no existe en OpenRouter), mostrando los precios de cada tramo de contexto (`10 / 50`) sin duplicar cuando ambos tramos valen igual.
+   - **Cost:** Clasificación automática según el tramo más caro de `max(Input, Output)`:
      - `FREE` (modelos gratuitos de `opencode` o locales de `ollama`)
      - `LOW` ≤ 500
      - `MEDIUM` < 2000
