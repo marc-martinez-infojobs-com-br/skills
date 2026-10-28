@@ -54,12 +54,27 @@ def fetch_json(url: str):
         with urllib.request.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception:
-        curl_bin = "curl.exe" if os.name == "nt" else "curl"
-        out = subprocess.check_output(
-            [curl_bin, "-sSL", "--fail", "-H", "User-Agent: opencode-models-tokens/1.0", url],
-            text=True,
-            encoding="utf-8",
-        )
+        if os.name == "nt":
+            # Windows PowerShell uses the OS certificate store and avoids
+            # Python/curl TLS validation failures caused by Schannel policies.
+            ps = (
+                "$ProgressPreference='SilentlyContinue'; "
+                "$r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "
+                f"-Headers @{{'User-Agent'='opencode-models-tokens/1.0'}} -Uri '{url}'; "
+                "$r.Content"
+            )
+            out = subprocess.check_output(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        else:
+            out = subprocess.check_output(
+                ["curl", "-sSL", "--fail", "-H", "User-Agent: opencode-models-tokens/1.0", url],
+                text=True,
+                encoding="utf-8",
+            )
         return json.loads(out)
 
 
